@@ -65,7 +65,77 @@ To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `fronte
 
 ## Architechture
 
-<img width="3022" height="6304" alt="arch" src="https://github.com/user-attachments/assets/caebb666-5280-40c4-9851-30b057a5ef03" />
+```mermaid
+flowchart TB
+    B[Browser]
+
+    subgraph VERCEL["Vercel"]
+        FE["Next.js 16 frontend<br/>library, episode workspace, semantic timeline"]
+    end
+
+    subgraph RENDER["Render — Docker web service, free plan, 1 instance"]
+        subgraph PROC["uvicorn process (app.main:create_app)"]
+            ROUTES["FastAPI routes<br/>app/main.py"]
+            COORD["PipelineCoordinator<br/>thread pool, WORKER_CONCURRENCY episodes"]
+            RUNNER["PipelineRunner<br/>DAG scheduler, STAGE_PARALLELISM stages"]
+            PARTIAL["Partial timeline builder<br/>pipeline/partial.py"]
+            ADS["Ad decision + VMAP<br/>pipeline/ads.py, vmap.py"]
+        end
+        DISK[("Working copy<br/>/data, wiped on restart")]
+    end
+
+    subgraph PIPELINE["18-stage pipeline (pipeline/stages/core.py)"]
+        direction LR
+        S00["s00 download<br/>URL episodes"] -.-> S01
+        S01["s01 ingest<br/>probe + proxy"] --> S02["s02 shots"] --> S03["s03 keyframes"] --> S09["s09 vision baseline"]
+        S01 --> S04["s04 audio prep"] --> S05["s05 VAD"] --> S06["s06 STT + diarization"] --> S07["s07 transcript clean"]
+        S04 --> S08["s08 audio events"]
+        S09 & S07 & S05 & S03 --> S10["s10 scenes"]
+        S10 & S07 --> S11["s11 dialogue entities"]
+        S11 & S09 & S03 --> S12["s12 targeted vision"]
+        S12 & S10 & S08 & S07 --> S13["s13 scene semantics"]
+        S13 & S12 & S07 & S05 --> S14["s14 ad scoring"]
+        S07 --> S15["s15 subtitles"]
+        S15 & S13 & S08 & S07 --> S16["s16 captions"]
+        S15 & S08 & S07 & S05 --> S17["s17 QC"]
+        S14 & S16 & S17 --> S18["s18 assemble"]
+    end
+
+    subgraph LOCAL["Free local models (CPU, optional installs)"]
+        direction LR
+        VISION["YOLOv8n, SigLIP zero-shot,<br/>EasyOCR — objects/location/mood/brands/presence"]
+        AUDIOM["PANNs Cnn14, Silero VAD,<br/>PySceneDetect, Demucs"]
+    end
+
+    NEON[("Neon Postgres<br/>EpisodeRecord, StageRecord")]
+    R2[("Cloudflare R2<br/>episode files, mirrored")]
+    SARVAM["Sarvam API<br/>Bengali STT + diarization"]
+    OPENAI["OpenAI API<br/>vision + text LLM fallback<br/>when local models unavailable"]
+    CATALOGUE[("brands.json catalogue")]
+    SRC["YouTube / Google Drive"]
+
+    B -- "pages, JS" --> FE
+    B -- "REST: upload, timeline, ads, subs" --> ROUTES
+    B -. "video, frames (signed URLs)" .-> R2
+
+    ROUTES -- enqueue --> COORD --> RUNNER --> PIPELINE
+    RUNNER -- "yt-dlp" --> SRC
+    RUNNER -- "stage status, progress" --> NEON
+    PIPELINE -- "JSON artifacts" --> DISK
+    ROUTES --> ADS --> CATALOGUE
+    ROUTES --> PARTIAL
+    ROUTES -- "read status" --> NEON
+    ROUTES -- "read timeline" --> DISK
+
+    DISK -- "upload after each stage" --> R2
+    R2 -. "restore on demand" .-> DISK
+
+    S06 --> SARVAM
+    S09 & S12 --> VISION
+    S02 & S05 & S08 --> AUDIOM
+    S09 & S12 -. "fallback if local models absent" .-> OPENAI
+    S07 & S10 & S11 & S13 -. "fallback if OPENAI_API_KEY unset" .-> OPENAI
+```
 
 
 ## Deploy
