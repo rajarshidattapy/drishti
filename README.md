@@ -65,7 +65,7 @@ To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `fronte
 
 ## Architechture
 
-!\[Architecture\](./arch.png)
+\[Architecture\](./arch.png)
 
 
 
