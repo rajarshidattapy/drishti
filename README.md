@@ -1,6 +1,6 @@
 # Drishti (built for the hoichoi hackathon)
 
-Drishti turns a Bengali episode into one semantic timeline for ad intelligence, subtitles, closed captions, and QC. This repository contains a Next.js 16 interface and a FastAPI backend based on the product and technical specifications in [`docs/`](docs/).
+Drishti turns a episode into one semantic timeline for ad intelligence, subtitles, closed captions, and QC. This repository contains a Next.js 16 interface and a FastAPI backend based on the product and technical specifications in [`docs/`](docs/).
 
 <img width="1919" height="1105" alt="image" src="data/image.png" />
 
@@ -41,7 +41,7 @@ Open `http://localhost:3000`. FastAPI docs are at `http://localhost:8000/docs`.
 - Synced player/demo playback, scene inspector, and zoomable semantic timeline
 - Scenes, transcript, entities, ads, subtitles, QC, and JSON views
 - Transparent ad-score components with configurable selection
-- Bengali SRT/VTT and closed-caption downloads
+- SRT/VTT and closed-caption downloads
 - QC and timestamp navigation
 - Timeline, cue-point, and QC exports
 - FastAPI SSE progress stream and published Pydantic JSON Schema

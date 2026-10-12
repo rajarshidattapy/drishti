@@ -82,6 +82,12 @@ class SiglipEmbedder:
         self.model = AutoModel.from_pretrained(self.MODEL).to(self.device).eval()
         self.processor = AutoProcessor.from_pretrained(self.MODEL)
 
+    @staticmethod
+    def _pooled(output):
+        # transformers >=4.49 wraps get_image_features/get_text_features in BaseModelOutputWithPooling;
+        # older versions return the pooled tensor directly.
+        return output.pooler_output if hasattr(output, "pooler_output") else output
+
     def embed(self, paths: list[Path], batch: int = 32) -> list[list[float]]:
         from PIL import Image  # type: ignore[import-not-found]
 
@@ -90,7 +96,18 @@ class SiglipEmbedder:
             images = [Image.open(path).convert("RGB") for path in paths[offset:offset + batch]]
             inputs = self.processor(images=images, return_tensors="pt").to(self.device)
             with self.torch.no_grad():
-                features = self.model.get_image_features(**inputs)
+                features = self._pooled(self.model.get_image_features(**inputs))
+            features = features / features.norm(dim=-1, keepdim=True)
+            output.extend(features.cpu().tolist())
+        return output
+
+    def embed_text(self, prompts: list[str], batch: int = 32) -> list[list[float]]:
+        """Text-tower embeddings, comparable to embed()'s image-tower output via dot product (both L2-normalized)."""
+        output: list[list[float]] = []
+        for offset in range(0, len(prompts), batch):
+            inputs = self.processor(text=prompts[offset:offset + batch], padding="max_length", return_tensors="pt").to(self.device)
+            with self.torch.no_grad():
+                features = self._pooled(self.model.get_text_features(**inputs))
             features = features / features.norm(dim=-1, keepdim=True)
             output.extend(features.cpu().tolist())
         return output
@@ -100,3 +117,36 @@ def siglip_embedder(device: str) -> SiglipEmbedder | None:
     if not (installed("transformers") and installed("torch") and installed("PIL")):
         return None
     return SiglipEmbedder(device)
+
+
+_yolo_model = None
+
+
+def yolo_detect(paths: list[Path], device: str, conf: float = 0.35) -> list[list[tuple[str, float]]] | None:
+    """YOLOv8n COCO detection. Returns, per image, [(label, confidence), ...] or None if ultralytics isn't installed."""
+    if not installed("ultralytics"):
+        return None
+    from ultralytics import YOLO  # type: ignore[import-not-found]
+
+    global _yolo_model
+    if _yolo_model is None:
+        _yolo_model = YOLO("yolov8n.pt")
+    results = _yolo_model.predict(
+        [str(path) for path in paths], device="cuda" if device.startswith("cuda") else "cpu", conf=conf, verbose=False,
+    )
+    return [[(result.names[int(box.cls)], float(box.conf)) for box in result.boxes] for result in results]
+
+
+_ocr_reader = None
+
+
+def ocr_texts(paths: list[Path]) -> list[list[str]] | None:
+    """EasyOCR text recognition (English + Bengali). Returns, per image, the recognised strings, or None if easyocr isn't installed."""
+    if not installed("easyocr"):
+        return None
+    import easyocr  # type: ignore[import-not-found]
+
+    global _ocr_reader
+    if _ocr_reader is None:
+        _ocr_reader = easyocr.Reader(["en", "bn"], gpu=False)
+    return [[str(text) for text in _ocr_reader.readtext(str(path), detail=0)] for path in paths]

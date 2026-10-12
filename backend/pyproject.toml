@@ -26,7 +26,9 @@ dev = ["pytest>=8.3,<9"]
 media = ["Pillow>=11,<13"]
 providers = ["openai>=1.75,<3", "sarvamai>=0.1,<2"]
 # Local models (GPU recommended): shots, VAD, audio events, SigLIP frame embeddings.
-gpu = ["scenedetect[opencv]>=0.6.4", "silero-vad>=5.1", "panns-inference>=0.1.1", "torch>=2.2", "transformers>=4.44", "Pillow>=11,<13", "demucs>=4.0"]
+gpu = ["scenedetect[opencv]>=0.6.4", "silero-vad>=5.1", "panns-inference>=0.1.1", "torch>=2.2", "transformers>=4.44", "sentencepiece>=0.2,<1", "Pillow>=11,<13", "demucs>=4.0"]
+# Free, CPU-friendly frame analysis: YOLOv8n objects/people, SigLIP zero-shot location/mood/brands, EasyOCR brand text.
+vision = ["ultralytics>=8.3,<9", "easyocr>=1.7,<2", "torch>=2.2", "transformers>=4.44", "sentencepiece>=0.2,<1", "Pillow>=11,<13"]
 
 [build-system]
 requires = ["setuptools>=75"]

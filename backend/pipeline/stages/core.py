@@ -486,13 +486,81 @@ class VisualBatch(BaseModel):
     items: list[VisualItem]
 
 
+MOODS = ["tense", "joyful", "calm", "sad", "romantic", "suspenseful", "action-packed"]
+_OBJECT_CONF = 0.35
+_BRAND_PROBABILITY = 0.6
+_NO_BRAND_PROMPT = "a photo with no logos or brand names visible"
+
+
+def _siglip_probability(positive_embed: list[float], negative_embed: list[float], image_embed: list[float]) -> float:
+    """Softmax of (positive, negative) prompt similarity. SigLIP's raw cosine similarities sit on a shared
+    baseline (near 0.8 even for unrelated prompts), so a flat similarity threshold misfires; this pairwise
+    contrast is the calibration SigLIP/CLIP zero-shot classification is built around."""
+    pos_score, neg_score = sum(a * b for a, b in zip(image_embed, positive_embed)) * 10, sum(a * b for a, b in zip(image_embed, negative_embed)) * 10
+    return math.exp(pos_score) / (math.exp(pos_score) + math.exp(neg_score))
+
+
+def _local_visual_tags(ctx: StageContext, unique: list[dict]) -> tuple[dict[str, dict], str] | None:
+    """Free CPU-only replacement for the s09 OpenAI vision call. Each model degrades independently and
+    records what ran, the same way PANNs/Silero do for audio (pipeline/stages/core.py:s08_audio_events):
+    YOLOv8n for objects/people, SigLIP zero-shot for location/mood/brands, EasyOCR as a second brand
+    signal. Returns None only if neither YOLO nor SigLIP is installed — nothing local left to tag with."""
+    if not unique:
+        return None
+    paths = [ctx.root / shot["keyframe"] for shot in unique]
+    yolo_results = local_models.yolo_detect(paths, ctx.settings.device, conf=_OBJECT_CONF)
+    embedder = local_models.siglip_embedder(ctx.settings.device)
+    ocr_results = local_models.ocr_texts(paths)
+    if yolo_results is None and embedder is None:
+        return None
+    detections = yolo_results if yolo_results is not None else [[] for _ in paths]
+    ocr_hits = ocr_results if ocr_results is not None else [[] for _ in paths]
+    method = "+".join(name for name, present in
+                       [("yolo", yolo_results is not None), ("siglip", embedder is not None), ("ocr", ocr_results is not None)] if present)
+
+    brand_names = [brand["name"] for brand in load_catalogue(ctx.settings.brand_catalogue)]
+    location_embeds = embedder.embed_text([f"a photo of a {location}" for location in LOCATIONS]) if embedder else []
+    mood_embeds = embedder.embed_text([f"a {mood} scene" for mood in MOODS]) if embedder else []
+    brand_embeds = embedder.embed_text([f"a photo showing the {name} brand" for name in brand_names]) if embedder and brand_names else []
+    no_brand_embed = embedder.embed_text([_NO_BRAND_PROMPT])[0] if brand_embeds else None
+    image_embeds = embedder.embed(paths) if embedder else [None] * len(paths)
+
+    def best(labels: list[str], embeds: list[list[float]], image_embed: list[float] | None, default: str) -> str:
+        if not embeds or image_embed is None:
+            return default
+        scores = [sum(a * b for a, b in zip(image_embed, text_embed)) for text_embed in embeds]
+        return labels[max(range(len(scores)), key=lambda i: scores[i])]
+
+    tags: dict[str, dict] = {}
+    for shot, boxes, image_embed, texts in zip(unique, detections, image_embeds, ocr_hits):
+        visible_brands = set()
+        if image_embed is not None and brand_embeds:
+            visible_brands = {
+                name for name, text_embed in zip(brand_names, brand_embeds)
+                if _siglip_probability(text_embed, no_brand_embed, image_embed) >= _BRAND_PROBABILITY
+            }
+        visible_brands |= {name for name in brand_names if any(_fuzzy(name, text) for text in texts)}
+        tags[shot["shot_id"]] = {
+            "location": best(LOCATIONS, location_embeds, image_embed, "unknown"),
+            "indoor": None,
+            "objects": sorted({label for label, score in boxes if label != "person" and score >= _OBJECT_CONF}),
+            "visible_brands": sorted(visible_brands),
+            "activity": "unknown",
+            "visual_mood": best(MOODS, mood_embeds, image_embed, "neutral"),
+            "people_count": sum(1 for label, score in boxes if label == "person" and score >= _OBJECT_CONF),
+            "confidence": 0.6,
+        }
+    return tags, method
+
+
 def s09_vision_baseline(ctx: StageContext) -> dict:
     shots = ctx.stage("s03_keyframes")["shots"]
-    tags: dict[str, dict] = {}
+    unique = [shot for shot in shots if shot["keyframe"]]
+    local = _local_visual_tags(ctx, unique)
+    tags, provider = (local[0], f"local_cv:{local[1]}") if local else ({}, None)
     llm = ctx.llm()
-    if llm.available():
+    if not tags and llm.available():
         system = load_prompt("s09_vision_v1", locations=", ".join(LOCATIONS))
-        unique = [shot for shot in shots if shot["keyframe"]]
         for offset in range(0, len(unique), 4):
             batch = unique[offset:offset + 4]
             response = llm.call(
@@ -506,14 +574,15 @@ def s09_vision_baseline(ctx: StageContext) -> dict:
                 item = by_id.get(shot["shot_id"]) or (response.items[position] if position < len(response.items) else None)
                 if item:
                     tags[shot["shot_id"]] = {**item.model_dump(exclude={"shot_id"}), "objects": [o.lower() for o in item.objects]}
+        provider = "openai"
     for shot in shots:
         if shot["shot_id"] in tags:
             continue
         # Deduplicated shots inherit the tags of the shot that represents them.
         tags[shot["shot_id"]] = dict(tags.get(shot["dup_of"] or "", UNKNOWN_VISUAL))
     return {
-        "visual_tags": tags, "provider": "openai" if llm.available() else "conservative_fallback",
-        "note": None if llm.available() else "Configure OPENAI_API_KEY for vision labels.",
+        "visual_tags": tags, "provider": provider or "conservative_fallback",
+        "note": None if provider else "Install the 'vision' extra (pip install -e '.[vision]') or configure OPENAI_API_KEY for vision labels.",
     }
 
 
@@ -744,6 +813,12 @@ def _product_vocabulary(categories: dict[str, list[str]]) -> dict[str, str]:
     return {term.casefold(): category for category, terms in categories.items() for term in terms if re.fullmatch(r"[a-z ]+", term.casefold())}
 
 
+def _local_presence_probabilities(embedder: "local_models.SiglipEmbedder", label: str, frames: list[tuple[Path, float]]) -> list[float]:
+    """SigLIP zero-shot presence: pairwise (positive, negative) prompt probability, per sampled frame."""
+    positive, negative = embedder.embed_text([f"a photo of a {label}", f"a photo without any {label}"])
+    return [_siglip_probability(positive, negative, embedding) for embedding in embedder.embed([path for path, _ in frames])]
+
+
 def s12_vision_targeted(ctx: StageContext) -> dict:
     stage = ctx.stage("s11_entities_dialogue")
     scenes = stage["scenes"]
@@ -752,6 +827,7 @@ def s12_vision_targeted(ctx: StageContext) -> dict:
     tags = ctx.stage("s09_vision_baseline")["visual_tags"]
     categories: dict[str, list[str]] = ctx.config("ad_categories.yaml")
     llm = ctx.llm()
+    embedder = local_models.siglip_embedder(ctx.settings.device)
     system = load_prompt("s12_presence_v1")
     t = ctx.t
     entities: list[dict] = []
@@ -783,7 +859,22 @@ def s12_vision_targeted(ctx: StageContext) -> dict:
             start, end = max(start, min(mention_times) - t.entity_window_padding), min(end, max(mention_times) + t.entity_window_padding)
         frames = _sample_window(ctx, source, entity["entity_id"], start, end)
         checked = [str(path.relative_to(ctx.root).as_posix()) for path, _ in frames]
-        if llm.available() and frames:
+        if embedder and frames:
+            label = entity["name"] + (f" ({entity['brand']})" if entity.get("brand") else "")
+            probabilities = _local_presence_probabilities(embedder, label, frames)
+            best_prob, worst_prob = max(probabilities), min(probabilities)
+            if best_prob >= t.entity_visible_confidence:
+                presence, confidence = "mentioned_and_shown", best_prob
+                visible_frames = sorted({checked[i] for i, p in enumerate(probabilities) if p >= t.entity_visible_confidence})
+                visible, note = True, "SigLIP zero-shot matched the sampled frames."
+            elif worst_prob <= 1 - t.entity_absent_confidence and len(frames) >= t.entity_absent_min_frames:
+                presence, confidence, visible_frames = "mentioned_only", 1 - worst_prob, []
+                visible, note = False, "SigLIP zero-shot found no match across the sampled frames."
+            else:
+                presence, confidence, visible_frames = "unverified", best_prob, []
+                visible, note = None, "SigLIP zero-shot was inconclusive."
+            visual_check = {"frames_checked": checked, "visible": visible, "visible_frames": visible_frames, "confidence": round(confidence, 3), "note": note}
+        elif llm.available() and frames:
             check = llm.call(
                 model=ctx.settings.llm_model_default, system=system,
                 user=f"Is a {entity['name']}{' (' + entity['brand'] + ')' if entity.get('brand') else ''} visible? Return the timestamps of the frames where it is visible, and a confidence.",
