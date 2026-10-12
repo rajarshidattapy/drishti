@@ -4,8 +4,7 @@ Drishti turns a Bengali episode into one semantic timeline for ad intelligence, 
 
 <img width="1919" height="1105" alt="image" src="data/image.png" />
 
-
-Backend deployed at: https://drishti-hoichoihackathon.onrender.com/docs
+Backend deployed at: [https://drishti-hoichoihackathon.onrender.com/docs](https://drishti-hoichoihackathon.onrender.com/docs)
 
 The app includes a populated demo episode, so all workspace interactions are available without model credentials or a source video.
 
@@ -38,7 +37,6 @@ Open `http://localhost:3000`. FastAPI docs are at `http://localhost:8000/docs`.
 - Episode pages open while processing and fill in as stages finish
 - Ad decisions: hard constraints → safety → pacing → brand safety → brand fit, driven by `backend/config/brands.json`; "no break" when nothing qualifies
 - VMAP manifest with inline VAST; the player plays the selected ad and resumes the episode; debug JSON under Export
-
 - Episode library with drag-and-drop video upload and processing stages
 - Synced player/demo playback, scene inspector, and zoomable semantic timeline
 - Scenes, transcript, entities, ads, subtitles, QC, and JSON views
@@ -63,13 +61,21 @@ The bundled demo is seeded as a separate processed episode. Local models from `d
 
 To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `frontend/.env.local`.
 
+
+
+## Architechture
+
+!\[Architecture\](./arch.png)
+
+
+
 ## Deploy
 
 The frontend runs on Vercel and the backend on Render (Docker), with Neon Postgres as the database. See [`docs/architecture.md`](docs/architecture.md) for how the pieces fit together.
 
 **Backend (Render).** The repo includes a Render Blueprint, [`render.yaml`](render.yaml), which builds [`backend/Dockerfile`](backend/Dockerfile) (Python 3.11 + ffmpeg) as a single-instance web service on the free plan. The free plan has no persistent disk, so episode files are kept in Cloudflare R2 and restored after restarts.
 
-Before deploying, create an R2 bucket in Cloudflare, plus an R2 API token with **Object Read & Write** on it. Note the account ID for the endpoint.
+Before deploying, create an R2 bucket in Cloudflare, plus an R2 API token with **Object Read &amp; Write** on it. Note the account ID for the endpoint.
 
 1. In Render, choose **New → Blueprint** and select this repository.
 2. When prompted, fill in:
@@ -106,3 +112,4 @@ python -m pytest tests -q
 cd ..\frontend
 npm run build
 ```
+
