@@ -65,8 +65,7 @@ To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `fronte
 
 ## Architechture
 
-\[Architecture\](./arch.png)
-
+<img width="3022" height="6304" alt="arch" src="https://github.com/user-attachments/assets/caebb666-5280-40c4-9851-30b057a5ef03" />
 
 
 ## Deploy
